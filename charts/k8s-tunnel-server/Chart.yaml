@@ -1,0 +1,16 @@
+apiVersion: v2
+name: k8s-tunnel-server
+description: |
+  Reach a Kubernetes API server with kubectl and helm over an existing, shared port 443.
+  Runs a wstunnel server in-cluster that carries raw TCP over WebSocket, published through an
+  existing ingress at a path prefix, with nginx doing basic auth. Intended for clusters whose
+  external load balancer terminates TLS and cannot be reconfigured.
+type: application
+version: 0.1.0
+appVersion: "v11.0.0"
+keywords:
+  - kubectl
+  - helm
+  - wstunnel
+  - websocket
+  - tunnel

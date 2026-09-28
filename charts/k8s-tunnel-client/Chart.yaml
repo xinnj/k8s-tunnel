@@ -1,0 +1,16 @@
+apiVersion: v2
+name: k8s-tunnel-client
+description: Tunnel clients on a front cluster, republishing each backend cluster's API server on a NodePort
+type: application
+version: 0.1.0
+# Must match the wstunnel version the BACKEND clusters run (charts/k8s-tunnel-server image.tag). The two
+# negotiate a protocol version at the WebSocket handshake, and a mismatch fails with an opaque
+# error -- see scripts/install-client.sh. Same image on both ends is the only reason this is safe.
+appVersion: "v11.0.0"
+keywords:
+  - kubectl
+  - helm
+  - wstunnel
+  - websocket
+  - tunnel
+  - nodeport

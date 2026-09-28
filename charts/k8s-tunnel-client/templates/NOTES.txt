@@ -1,0 +1,30 @@
+k8s-tunnel-client {{ .Chart.Version }} deployed to namespace {{ .Release.Namespace }}.
+
+{{ len .Values.backends }} backend(s). Consumers connect to https://<any-node-ip>:<nodePort>. Any node
+of THIS cluster answers, so list them with:
+
+  kubectl -n {{ .Release.Namespace }} get nodes -o wide
+{{ range $b := .Values.backends }}
+  {{ $b.name }}
+    host:      {{ $b.host }}
+    prefix:    {{ $b.prefix }}
+    user:      {{ $b.user }}
+    Password:  kubectl -n {{ $.Release.Namespace }} exec deploy/{{ include "k8s-tunnel-client.fullname" $ }} -- cat /etc/tunnel/backends/{{ $b.name }}
+    nodePort:  {{ $b.nodePort }}
+{{ end }}
+A backend's password is not printed above because this output lands in terminal scrollback and CI
+logs; the command reads it from the running pod instead, along with the rest of that backend's
+config.
+
+These ports are NOT authenticated. A wstunnel client is a dumb relay -- it terminates nothing and
+verifies nothing -- so anyone who can reach a nodePort has raw TCP to that backend's API server,
+stopped only by Kubernetes credentials. Confine them to a trusted network. Note also that every pod
+in THIS cluster reaches them directly, because the listeners must bind 0.0.0.0.
+
+Per-backend status is in the logs, not in the pod's Ready state:
+
+  kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "k8s-tunnel-client.fullname" . }} -f | grep '\[supervisor\]'
+
+To build a kubeconfig for one of them, on a machine holding the BACKEND's kubeconfig:
+
+  BACKEND=<backend> FRONT_NODE_IP=<node-ip> ./scripts/front-kubeconfig.sh

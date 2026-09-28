@@ -1,0 +1,112 @@
+# Default values for k8s-tunnel-server.
+
+# -- Full image reference INCLUDING registry. Set the tag to a pinned release; never "latest".
+image:
+  repository: ghcr.io/erebe/wstunnel
+  tag: "v11.0.0"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# -- Destinations the tunnel server is allowed to forward to. Enforced by wstunnel itself, so
+# this control is CNI-independent -- unlike a NetworkPolicy, which plain flannel silently
+# ignores. The client's `-L` destination must match one of these EXACTLY; a client asking for
+# the ClusterIP or a different spelling is refused, visibly only in the server's logs.
+restrictTo:
+  - kubernetes.default.svc:443
+
+# -- The URL path prefix the tunnel is published at. GENERATED on first install if left empty, and
+# preserved on every later upgrade by reading it back out of its Secret. You normally do not set it.
+#
+# Set it to PIN the value. Do that if this release is rendered without cluster access -- `helm
+# template`, Argo CD, Flux, or any diff tool -- because those cannot read the stored value and would
+# otherwise render a different prefix on every run and break every client.
+#
+# It doubles as a speed bump against scanners -- treat it as material that is known, since it
+# appears in nginx access logs, in `kubectl get ingress`, and in shell history.
+pathPrefix: ""
+# -- Reuse an existing Secret holding the prefix under key `prefix`. This chart then renders no
+# prefix Secret at all, and the Ingress takes its path from that Secret -- so it must NOT also be
+# set via pathPrefix, which would be a second source of truth and could silently disagree. With
+# this set, rendering requires cluster access.
+existingSecret: ""
+
+basicAuth:
+  # -- The tunnel server CANNOT verify basic auth (wstunnel v11's --http-upgrade-credentials is
+  # client-only), so nginx validates it here. Without this, only the path prefix guards the
+  # endpoint.
+  enabled: true
+  user: tunnel
+  # -- GENERATED on first install if left empty, and preserved on every later upgrade by reading it
+  # back out of its Secret. Changing it invalidates every configured client.
+  #
+  # Set it to PIN the value, or to ROTATE it -- an explicit value always wins.
+  #
+  # It is stored in plaintext next to the htpasswd hash on purpose: bcrypt is one-way, so without
+  # this copy the password could never be retrieved and a client could never be configured. Both
+  # are derived from a single evaluation, so the copy cannot disagree with the hash it must match.
+  password: ""
+  # -- Reuse an existing htpasswd Secret (key must be `auth`). Disables generation.
+  existingSecret: ""
+  realm: Authentication Required
+
+ingress:
+  enabled: true
+  className: nginx
+  # -- REQUIRED. The hostname the tunnel is published on. If several services share one
+  # hostname, this is that hostname and the tunnel is distinguished by its path prefix.
+  host: ""
+  # -- Terminate TLS at this Ingress, by emitting a `tls:` block for `secretName` below.
+  #
+  # Leave it false when an external load balancer terminates TLS and forwards plain HTTP to nginx
+  # -- the topology the rest of this chart assumes. Set it true when the cluster is exposed
+  # directly and nginx is the first thing to see the connection.
+  tls:
+    enabled: false
+    # -- OPTIONAL. The Secret holding the server certificate and key. Leave it empty when the
+    # ingress-nginx controller runs with `--default-ssl-certificate`: the `tls:` block is still
+    # emitted, so HTTPS is still forced, and that default certificate is served instead.
+    #
+    # When set, this chart still does NOT create the Secret. Point it at one that exists, or add
+    # `cert-manager.io/cluster-issuer: <issuer>` to `ingress.annotations` and let cert-manager
+    # create it under this name.
+    secretName: ""
+  # -- Force the HTTP->HTTPS redirect even when TLS is terminated BEFORE this Ingress.
+  #
+  # Leave it false behind a load balancer that terminates TLS and forwards plain HTTP: forcing a
+  # redirect there loops forever (nginx 308s -> the client retries with TLS -> the LB strips it ->
+  # nginx 308s again). Set it true only if that LB forwards X-Forwarded-Proto.
+  #
+  # Note this is NOT what gives you a redirect when `tls.enabled` is true. ingress-nginx redirects
+  # by itself whenever an Ingress has TLS configured; this annotation neither causes that nor
+  # suppresses it.
+  forceSSLRedirect: false
+  # -- Extra annotations merged over the built-in ones. This is where a cert-manager issuer goes.
+  annotations: {}
+  pathType: Prefix
+
+service:
+  type: ClusterIP
+  port: 8080
+
+# -- These must comfortably exceed the load balancer's idle timeout, which you usually cannot
+# change. What actually keeps the connection alive is the client's websocket ping (30s default
+# in wstunnel) -- do not disable it.
+proxyReadTimeout: 3600
+proxySendTimeout: 3600
+
+resources:
+  requests:
+    cpu: 10m
+    memory: 16Mi
+  limits:
+    cpu: 200m
+    memory: 64Mi
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

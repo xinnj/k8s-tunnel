@@ -1,0 +1,116 @@
+{{- include "k8s-tunnel-client.validate" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "k8s-tunnel-client.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "k8s-tunnel-client.labels" . | nindent 4 }}
+spec:
+  # One replica holds every tunnel. That is a deliberate trade: the cost is that any config change
+  # restarts the pod and drops EVERY backend's live sessions, and that a per-backend failure is
+  # visible only in the logs. See "Limitations" in the README.
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "k8s-tunnel-client.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "k8s-tunnel-client.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        # A mounted ConfigMap does NOT rewrite a running process's argv. Without this, a
+        # `helm upgrade` that rotates a credential would update the file and leave the tunnel
+        # authenticating with the old value indefinitely, with nothing to indicate it. This chart
+        # generates nothing random, so the checksum is stable across identical renders and only
+        # moves when the configuration actually changed.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      # The pod only forwards raw TCP to an API server; it never authenticates to one. Without
+      # this, a compromised tunnel would hold a real API identity rather than an anonymous one.
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        # Must match the image's `app` user. /home/app is mode 700 owned by app:app, so any other
+        # uid cannot traverse into it to exec the binary: the container dies with exit code 128,
+        # reason StartError, and emits NO logs -- which reads like a config error.
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: wstunnel-client
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        # dumb-init stays PID 1. Setting `command` REPLACES the image entrypoint (which is already
+        # dumb-init), so it is restated here: without it the supervisor would become PID 1, and a
+        # shell as PID 1 neither reaps orphans nor forwards signals.
+        command: ["/usr/bin/dumb-init", "-v", "--", "/bin/sh", "/etc/tunnel/scripts/_supervisor.sh"]
+        # No liveness or readiness probe, deliberately. A container gets exactly one of each, so
+        # per-backend health cannot be expressed here -- and a pod-level probe would make one
+        # crash-looping backend black out the backends that still work. The image also has no
+        # curl, nc or bash, and dash has no /dev/tcp, so there is nothing to probe WITH.
+        # Per-backend status is in the logs; see NOTES.txt.
+        ports:
+        {{- range $i, $b := .Values.backends }}
+        - name: {{ $b.name }}
+          # Derived, not configured -- see the note in values.yaml. Must match the Service's
+          # targetPort, which is computed from the same expression.
+          containerPort: {{ add 6443 $i }}
+          protocol: TCP
+        {{- end }}
+        volumeMounts:
+        - name: backends
+          mountPath: /etc/tunnel/backends
+          readOnly: true
+        - name: scripts
+          mountPath: /etc/tunnel/scripts
+          readOnly: true
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+        resources:
+          {{- toYaml .Values.resources | nindent 10 }}
+      volumes:
+      - name: backends
+        configMap:
+          name: {{ include "k8s-tunnel-client.fullname" . }}
+          # `items` is REQUIRED here, not tidiness. Without it this volume also receives the
+          # ConfigMap's `_supervisor.sh` key, and the supervisor would `.`-source ITSELF as though
+          # it were a backend config -- a file with no TUNNEL_HOST, spawning a wstunnel aimed
+          # nowhere. Listing only the backend keys keeps the two roles in separate directories.
+          items:
+          {{- range .Values.backends }}
+          - key: {{ .name }}
+            path: {{ .name }}
+          {{- end }}
+      - name: scripts
+        configMap:
+          name: {{ include "k8s-tunnel-client.fullname" . }}
+          items:
+          - key: _supervisor.sh
+            path: _supervisor.sh
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

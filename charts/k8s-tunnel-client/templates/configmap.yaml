@@ -1,0 +1,26 @@
+{{- include "k8s-tunnel-client.validate" . }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "k8s-tunnel-client.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "k8s-tunnel-client.labels" . | nindent 4 }}
+data:
+  # The supervisor itself, mounted at /etc/tunnel/scripts. It is NOT a backend config, which is
+  # why the two volumes in the Deployment use explicit `items` lists -- without them this key
+  # would also appear in /etc/tunnel/backends and the supervisor would `.`-source itself.
+  _supervisor.sh: |-
+    {{- .Files.Get "files/supervisor.sh" | nindent 4 }}
+{{- range $i, $b := .Values.backends }}
+  # Backend "{{ $b.name }}". Sourced by the supervisor, so every value is SINGLE-QUOTED -- see the
+  # shQuote helper. Editing this by hand means writing shell-quoted values, and the edit needs a
+  # `kubectl rollout restart` to take effect. The next `helm upgrade` overwrites it.
+  {{ $b.name }}: |
+    TUNNEL_HOST={{ include "k8s-tunnel-client.shQuote" $b.host }}
+    TUNNEL_PREFIX={{ include "k8s-tunnel-client.shQuote" $b.prefix }}
+    TUNNEL_USER={{ include "k8s-tunnel-client.shQuote" $b.user }}
+    TUNNEL_PASS={{ include "k8s-tunnel-client.shQuote" $b.password }}
+    TUNNEL_DEST={{ include "k8s-tunnel-client.shQuote" $.Values.dest }}
+    TUNNEL_LOCAL_PORT={{ include "k8s-tunnel-client.shQuote" (add 6443 $i | toString) }}
+{{- end }}

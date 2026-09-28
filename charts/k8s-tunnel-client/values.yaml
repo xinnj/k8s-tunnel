@@ -1,0 +1,75 @@
+# Default values for k8s-tunnel-client.
+#
+# This chart runs on the FRONT cluster: the one whose network your users are already on. It holds
+# one outbound tunnel per BACKEND cluster and republishes each on a NodePort here. The backend side
+# is charts/k8s-tunnel, deployed separately, and is not modified by anything here.
+
+# -- Full image reference INCLUDING registry. Deliberately the SAME image as the backend chart:
+image:
+  repository: ghcr.io/erebe/wstunnel
+  tag: "v11.0.0"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# -- The destination each tunnel forwards to, inside its BACKEND cluster.
+#
+# Not per-backend, because it is not a property of this chart: it is the backend's `--restrict-to`
+# allowlist (charts/k8s-tunnel `values.yaml`). If you ever change that on a backend, this must
+# match it EXACTLY or that backend refuses the upgrade -- an error visible only in ITS logs, while
+# from here it merely looks like the tunnel is broken.
+dest: kubernetes.default.svc:443
+
+# -- One entry per BACKEND cluster. Each becomes:
+#      * a ConfigMap key (the key IS `name`)
+#      * a `wstunnel client` process inside the pod
+#      * one port on the Service, and therefore one NodePort
+#    Adding an entry requires `helm upgrade`: the Service must declare each port, so a ConfigMap
+#    edit alone cannot add a backend.
+#
+#    name      <= 15 chars, [a-z0-9-], at least one letter, no leading/trailing/double '-'.
+#              It is the Service port name, and Kubernetes caps those at 15 characters.
+#    host      Backend ingress hostname, NO scheme. Must resolve and be reachable from THIS cluster.
+#    prefix    The backend's path prefix (its chart's `pathPrefix`). A shared secret; never logged.
+#    user/pass Backend basic-auth credentials. pass lands in the ConfigMap in plaintext -- see the
+#              Limitations section of the README before putting a reused credential here.
+#    nodePort  PINNED, never auto-allocated: an allocated port is not reproducible across a
+#              reinstall, and a changed port silently invalidates every kubeconfig already handed
+#              out. Must be 30000-32767 and unique. Also note the port is only half the address --
+#              a consumer's kubeconfig pins a NODE IP too, so pin a stable node.
+#
+#    There is deliberately no `localPort`. The port a tunnel listens on inside the pod is an
+#    implementation detail nobody consumes -- consumers use the nodePort -- so it is derived from
+#    the entry's position (6443, 6444, ...) rather than configured. That removes a whole class of
+#    mistake: nothing to duplicate, nothing to drop below 1024, and no way for the Service's
+#    targetPort to drift from the port the process actually binds.
+backends: []
+#  - name: test
+#    host: test.test.com
+#    prefix: ""
+#    user: tunnel
+#    password: ""
+#    nodePort: 30643
+
+service:
+  # -- Cluster, not Local. The manifest hardcodes `type: NodePort`, and with one replica `Local`
+  # would serve the port on exactly ONE node -- every other node IP would refuse, which breaks the
+  # "any node works" property consumers rely on. Also keep in mind a NodePort answers on any node
+  # but a kubeconfig pins one address: draining the pinned node breaks that consumer.
+  externalTrafficPolicy: Cluster
+
+resources:
+  requests:
+    cpu: 10m
+    memory: 16Mi
+  limits:
+    cpu: 200m
+    memory: 64Mi
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

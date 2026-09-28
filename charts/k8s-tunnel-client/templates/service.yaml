@@ -1,0 +1,34 @@
+{{- include "k8s-tunnel-client.validate" . }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "k8s-tunnel-client.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "k8s-tunnel-client.labels" . | nindent 4 }}
+spec:
+  # NodePort, and deliberately NOT configurable. The tunnel carries raw TCP so that kubectl's TLS
+  # handshake terminates at the BACKEND API server, which is what makes exec, port-forward and
+  # logs -f work. An L7 Ingress cannot front this -- it would re-originate that handshake. There
+  # is no ClusterIP variant worth having either: the entire purpose is to be reachable from
+  # outside the cluster, and a ClusterIP would silently break every consumer's kubeconfig.
+  type: NodePort
+  externalTrafficPolicy: {{ .Values.service.externalTrafficPolicy }}
+  selector:
+    {{- include "k8s-tunnel-client.selectorLabels" . | nindent 4 }}
+  ports:
+  {{- range $i, $b := .Values.backends }}
+  # name == the backend name == the ConfigMap key. Required, not decorative: Kubernetes rejects a
+  # multi-port Service whose ports are unnamed, and it is what makes `kubectl get svc` readable.
+  - name: {{ $b.name }}
+    # port == nodePort on purpose, so the number a consumer uses is the same one printed by
+    # `kubectl get svc`, reserved on every node, and written into their kubeconfig.
+    port: {{ $b.nodePort }}
+    # The client's listener inside the pod, bound to 0.0.0.0. Derived from the entry's position,
+    # matching the containerPort in the Deployment. It must NOT be 127.0.0.1 as connect.sh uses on
+    # a laptop: kube-proxy delivers to <podIP>:<targetPort>, and a loopback socket is not reachable
+    # at the pod IP.
+    targetPort: {{ add 6443 $i }}
+    nodePort: {{ $b.nodePort }}
+    protocol: TCP
+  {{- end }}

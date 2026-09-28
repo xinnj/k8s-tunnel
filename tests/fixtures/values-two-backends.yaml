@@ -1,0 +1,50 @@
+# Two backends, for the chart and supervisor tests.
+#
+# The credential values are DELIBERATELY HOSTILE. Every value the chart writes into the ConfigMap
+# is shell-quoted and then `.`-sourced by the supervisor, so `$`, a single quote and a backslash
+# are exactly where a quoting bug hides. Unquoted, `$$` expands to the shell's PID and the
+# password is silently wrong -- which surfaces as a 401 at handshake time with nothing in the
+# payload to explain it. A benign fixture would pass whether the quoting is right or wrong.
+#
+# Rendered values these must survive as, exactly:
+#   test   password = p@$$w0rd'x\y
+#   test-prod password = s3cr3t\'q$
+#   both      prefix   = alpha$prefix / beta$prefix
+
+image:
+  repository: ghcr.io/erebe/wstunnel
+  tag: "v11.0.0"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+service:
+  type: NodePort
+  externalTrafficPolicy: Cluster
+
+dest: kubernetes.default.svc:443
+
+backends:
+  - name: test
+    host: test.test.com
+    prefix: alpha$prefix
+    user: tunnel
+    password: "p@$$w0rd'x\\y"
+    nodePort: 30643
+
+  - name: test-prod
+    host: test-prod.test.com
+    prefix: beta$prefix
+    user: tunnel
+    password: "s3cr3t\\'q$"
+    nodePort: 30644
+
+resources:
+  requests:
+    cpu: 10m
+    memory: 16Mi
+  limits:
+    cpu: 200m
+    memory: 64Mi

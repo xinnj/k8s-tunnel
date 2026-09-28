@@ -1,0 +1,102 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "k8s-tunnel-server.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "k8s-tunnel-server.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "k8s-tunnel-server.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "k8s-tunnel-server.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        # The prefix reaches the container through a secretKeyRef, which is resolved at container
+        # START. Without this annotation, changing the prefix updates the Secret and the Ingress
+        # while the running server keeps enforcing the OLD one: nginx routes a path the server then
+        # refuses, every client 404s, and nothing in any log explains why. That was already true of
+        # the documented rotation procedure before this chart generated the value.
+        #
+        # Derived from the whole published-path template, so it moves exactly when the prefix does.
+        # It must NOT come from `pathPrefixIfKnown`: that is empty on any cluster-less render, so it
+        # would sit still precisely when it needs to change.
+        checksum/prefix: {{ include (print $.Template.BasePath "/published-path.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      # The pod never talks to the API server as itself -- it only forwards TCP to it -- so it
+      # has no use for a token. Without this, a compromised tunnel holds an authenticated API
+      # identity rather than an anonymous one.
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        # Must match the image's `app` user. /home/app is mode 700 owned by app:app, so any
+        # other uid cannot traverse into it to exec the binary: the container dies with exit
+        # code 128, reason StartError, and emits NO logs -- which reads like a config error.
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: wstunnel
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        # The binary is NOT on PATH and the image entrypoint is dumb-init, so supplying only
+        # `args` makes dumb-init treat the first arg as a command to exec.
+        command: ["/home/app/wstunnel"]
+        args:
+        - "server"
+        {{- range .Values.restrictTo }}
+        - "--restrict-to"
+        - {{ . | quote }}
+        {{- end }}
+        - "ws://0.0.0.0:8080"
+        env:
+        # Read natively by wstunnel. Do NOT try to pass the same value as an arg: Kubernetes
+        # does not expand $(VAR) in args when the variable comes from a secretKeyRef -- the
+        # literal string reaches the container and the restriction silently never applies.
+        - name: WSTUNNEL_RESTRICT_HTTP_UPGRADE_PATH_PREFIX
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "k8s-tunnel-server.prefixSecretName" . }}
+              key: prefix
+        ports:
+        - name: ws
+          containerPort: 8080
+          protocol: TCP
+        readinessProbe:
+          tcpSocket:
+            port: 8080
+          initialDelaySeconds: 3
+          periodSeconds: 10
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+        resources:
+          {{- toYaml .Values.resources | nindent 10 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

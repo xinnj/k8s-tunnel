@@ -1,0 +1,20 @@
+{{- $prefixSecret := include "k8s-tunnel-server.prefixSecretName" . -}}
+{{- $authSecret := include "k8s-tunnel-server.basicAuthSecretName" . -}}
+k8s-tunnel-server {{ .Chart.Version }} deployed to namespace {{ .Release.Namespace }}.
+{{ if not .Values.ingress.enabled }}
+WARNING: ingress.enabled is false, so NOTHING publishes this tunnel -- clients cannot reach it.
+{{ end }}
+  host:      {{ if .Values.ingress.enabled }}{{ .Values.ingress.host }}{{ else }}<not published>{{ end }}
+  prefix:    kubectl -n {{ .Release.Namespace }} get secret {{ $prefixSecret }} -o jsonpath='{.data.prefix}' | base64 -d
+{{- if .Values.basicAuth.enabled }}
+  user:      {{ .Values.basicAuth.user }}
+  Password:  kubectl -n {{ .Release.Namespace }} get secret {{ $authSecret }} -o jsonpath='{.data.password}' | base64 -d
+{{- else }}
+  user:      <basicAuth is disabled -- only the path prefix guards this tunnel>
+{{- end }}
+
+prefix and Password are generated on install and preserved on upgrade, so they are not printed
+here. Hand the four values above to whoever needs them, out of band.
+
+Rendering without cluster access -- `helm template`, Argo CD, Flux -- must pin them with
+--set pathPrefix=... --set basicAuth.password=..., or it mints a new prefix on every run.
