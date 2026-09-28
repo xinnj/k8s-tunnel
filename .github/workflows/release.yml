@@ -1,0 +1,67 @@
+name: Release
+
+on:
+  release:
+    types: [ published ]
+
+# Uploading release assets needs write access; the workflow default may be read-only.
+permissions:
+  contents: write
+
+jobs:
+  charts:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # The runner image ships Helm, so there is no setup action -- but which version packaged the
+      # charts is otherwise invisible in the log.
+      - name: Show Helm version
+        run: helm version
+
+      # The tag comes in through env rather than straight into the script: a tag name is text
+      # someone else controls, and splicing ${{ github.ref_name }} into `run:` would make it shell
+      # code. Good enough here since only the maintainer tags, but it is free to get right.
+      - name: Resolve version
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -eu
+          version="${REF_NAME#v}"
+          # Shape check only, not a semver check: `v1.2.x` passes here and is rejected by helm
+          # later. What this does catch is a tag that strips to nothing (a bare "v") or carries
+          # characters that have no business in a version, both of which would otherwise surface
+          # as a confusing helm error.
+          case "$version" in
+            "" | *[!0-9A-Za-z.+-]*)
+              printf '::error::release tag %s does not yield a usable chart version (%s)\n' \
+                "$REF_NAME" "$version" >&2
+              exit 1
+              ;;
+          esac
+          printf 'VERSION=%s\n' "$version" >> "$GITHUB_ENV"
+
+      # Deliberately no --app-version. appVersion is the wstunnel version the two ends have to
+      # share (see charts/k8s-tunnel-client/Chart.yaml), not this repo's release version, and
+      # restamping it with the tag would break the websocket handshake.
+      #
+      # --version is the tag, and the tag wins: a release tagged 1.0.0 from a Chart.yaml that
+      # still says 0.1.0 ships a tarball claiming 1.0.0. That is intentional -- the tag names
+      # the release, and nothing here should block one. It does mean the tarball and the
+      # checked-out Chart.yaml can disagree, so bump charts/*/Chart.yaml when you tag if you
+      # want `helm install ./charts/...` to report the same version as the downloaded chart.
+      - name: Package Helm charts
+        run: |
+          set -eu
+          mkdir -p dist
+          for chart in charts/*/; do
+            helm package "$chart" --version "$VERSION" --destination dist
+          done
+          ls -l dist
+
+      - name: Release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: dist/*.tgz
+          # A release that uploads nothing should fail rather than succeed quietly.
+          fail_on_unmatched_files: true
